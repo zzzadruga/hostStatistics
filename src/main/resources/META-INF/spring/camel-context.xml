@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2014-2017, Red Hat, Inc. and/or its affiliates, and individual
+    contributors by the @authors tag. 
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+<!-- Configures the Camel Context-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd        http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">
+        <bean
+        class="org.springframework.jdbc.datasource.SimpleDriverDataSource" id="dataSource">
+        <property name="driverClass" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/>
+        <property name="url" value="jdbc:sqlserver://***.***.***.***:****;databaseName=**********;"/>
+        <property name="username" value="**********"/>
+        <property name="password" value="**********"/>
+    </bean>
+    <bean class="org.apache.activemq.ActiveMQConnectionFactory" id="activemq-connection-factory">
+        <property name="brokerURL" value="vm://amq?broker.persistent=false"/>
+        <property name="userName" value="admin"/>
+        <property name="password" value="admin"/>
+    </bean>
+    <bean class="org.apache.activemq.camel.component.ActiveMQComponent" id="activemq">
+        <property name="configuration">
+            <bean class="org.apache.activemq.camel.component.ActiveMQConfiguration">
+                <property name="connectionFactory" ref="activemq-connection-factory"/>
+            </bean>
+        </property>
+    </bean>
+    <camelContext id="_camelContextHostStatistics" xmlns="http://camel.apache.org/schema/spring">
+        <route id="hostStatistics">
+            <from id="_fromQueueHostStatistics" uri="activemq:queue:hostStatistics"/>
+            <log id="_parseStart" logName="PARSE" message="Parsing the file &quot;${file:name}&quot; started"/>
+            <setHeader headerName="timeToStartParsing" id="_setTimeToStartParsingHostStatistics">
+                <simple>${date:now:yyyy-MM-dd hh:mm:ss.SSS}</simple>
+            </setHeader>
+            <setHeader headerName="directory" id="_setParseDirectory">
+                <simple>parse-files</simple>
+            </setHeader>
+            <to id="_hostStatisticsInsertIntoLOG_ACTIONStart" uri="sql:SET NOCOUNT ON;INSERT INTO [dbo].[LOG_ACTION] ([File_ID],[Action_name_ID],[Status_ID],[Start_time]) VALUES (:#${header.hostStatisticsID},5,1,:#${header.timeToStartParsing});?dataSource=#dataSource"/>
+            <split id="_decodeBase64">
+                <xpath>//ATIH2017/ItemList/Item</xpath>
+                <setHeader headerName="timeToStartDecode" id="_setTimeToStartDecode">
+                    <simple>${date:now:yyyy-MM-dd hh:mm:ss.SSS}</simple>
+                </setHeader>
+                <setHeader headerName="parseFileName" id="setParseFileName">
+                    <xpath resultType="java.lang.String">//Item/dirpath/text()</xpath>
+                </setHeader>
+                <setHeader headerName="fileName" id="setCorrectFileName">
+                    <simple resultType="java.lang.String">${header.parseFileName.replaceAll("\\","/")}</simple>
+                </setHeader>
+                <log id="_decodeStart" logName="DECODE" message="Decoding the file &quot;${header.filename}&quot; started"/>
+                <to id="_decodeBase64InsertIntoD_FILE" uri="sql:SET NOCOUNT ON;INSERT INTO [dbo].[D_FILE] ([Parent_ID],[Name],[Input],[Output],[Extension]) VALUES (:#${header.hostStatisticsID},:#${header.fileName},'-','work/cbr/output/extract/','.xml');SELECT SCOPE_IDENTITY() AS 'ID';?dataSource=#dataSource&amp;outputHeader=ID&amp;transacted=true&amp;exchangePattern=InOut"/>
+                <setHeader headerName="rowID" id="_setDecodeFileRowID">
+                    <simple>${header.ID[0]['ID']}</simple>
+                </setHeader>
+                <to id="_decodeBase64InsertIntoLOG_ACTIONStart" uri="sql:SET NOCOUNT ON;INSERT INTO [dbo].[LOG_ACTION] ([File_ID],[Action_name_ID],[Status_ID],[Start_time]) VALUES (:#${header.rowID},4,1,:#${header.timeToStartDecode});?dataSource=#dataSource"/>
+                <setBody id="setBase64code">
+                    <xpath>//Item/body/text()</xpath>
+                </setBody>
+                <unmarshal id="_marshalBase64">
+                    <base64/>
+                </unmarshal>
+                <to id="_toQueueParseAfterDecode" uri="activemq:parse"/>
+                <to id="_decodeBase64UpdateLOG_ACTIONFinish" uri="sql:UPDATE [dbo].[LOG_ACTION] SET [Status_ID] = 2,[End_time]=:#${date:now:yyyy-MM-dd hh:mm:ss.SSS} WHERE [File_ID] = :#${header.rowID} AND [Start_time] = :#${header.timeToStartDecode};?dataSource=#dataSource"/>
+                <log id="_decodeComplete" logName="DECODE" message="The decoding of the file &quot;${header.filename}&quot; is completed"/>
+            </split>
+            <to id="_hostStatisticsInsertIntoLOG_ACTIONFinish" uri="sql:UPDATE [dbo].[LOG_ACTION] SET [Status_ID] = 2,[End_time]=:#${date:now:yyyy-MM-dd hh:mm:ss.SSS} WHERE [File_ID] = :#${header.hostStatisticsID} AND [Start_time] = :#${header.timeToStartParsing};?dataSource=#dataSource"/>
+            <log id="_parseComplete" logName="PARSE" message="Parsing the &quot;${file:name}&quot; file is complete"/>
+        </route>
+    </camelContext>
+</beans>
